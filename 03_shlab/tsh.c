@@ -1,8 +1,8 @@
 /*
  * tsh - A tiny shell program with job control
  *
- * Name: <fill in>
- * Student id: <fill in>
+ * Name: 구건모
+ * Student id: 2020021949
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -171,7 +171,38 @@ int main(int argc, char **argv)
  */
 void eval(char *cmdline)
 {
-  return;
+  pid_t pid;
+  int bg;
+  char* argv[MAXARGS];
+
+  // block SIGCHLD
+  sigset_t mask, prev;
+  sigemptyset(&mask);
+  sigaddset(&mask, SIGCHLD);
+  sigprocmask(SIG_BLOCK, &mask, &prev);
+
+  bg = parseline(cmdline, argv);
+  if (!builtin_cmd(argv)) {
+    if ((pid = fork()) == 0) { // child
+      setpgrp();
+      if (execve(argv[0], argv, environ) < 0) {
+        printf("%s: Command not found\n", argv[0]);
+        fflush(stdout);
+        exit(0);
+      }
+    } else if (pid > 0) { // parent
+      // unblocking SIGCHLD
+      sigprocmask(SIG_SETMASK, &prev, NULL);
+
+      if (bg) { // background
+        addjob(jobs, pid, BG, cmdline);
+        printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
+      } else { // foreground
+        addjob(jobs, pid, FG, cmdline);
+        waitfg(pid);
+      }
+    } else unix_error("fork error");
+  }
 }
 
 /*
@@ -237,6 +268,19 @@ int parseline(const char *cmdline, char **argv)
  */
 int builtin_cmd(char **argv)
 {
+  if (!strcmp(argv[0], "quit")) {
+    fflush(stdout);
+    exit(0);
+  } else if (!strcmp(argv[0], "jobs")) {
+    listjobs(jobs);
+    return 1;
+  } else if (!strcmp(argv[0], "bg")) {
+    do_bgfg(argv);
+    return 1;
+  } else if (!strcmp(argv[0], "fg")) {
+    do_bgfg(argv);
+    return 1;
+  }
   return 0;     /* not a builtin command */
 }
 
@@ -245,6 +289,51 @@ int builtin_cmd(char **argv)
  */
 void do_bgfg(char **argv)
 {
+  int bg, jb, id, n, i;
+  struct job_t* job;
+
+  if (argv[1] == NULL) {
+    printf("%s command requires PID or %%jobid argument\n", argv[0]);
+    return;
+  }
+  bg = !strcmp(argv[0], "bg");
+
+  jb = 0;
+  if (argv[1][0] == '%') { // jid
+    jb = 1;
+  } else { // pid
+    jb = 0;
+  }
+  for (n = jb; argv[1][n]; ++n) continue;
+  for (i = jb, id = 0; i < n; ++i) {
+    if (isdigit(argv[1][i]) == 0) {
+      printf("%s: argument must be a PID or %%jobid\n", argv[0]);
+      return;
+    }
+    id *= 10;
+    id += argv[1][i] - '0';
+  }
+
+  if (jb) { // jid
+    job = getjobjid(jobs, id);
+  } else { // pid
+    job = getjobpid(jobs, id);
+  }
+  if (job == NULL) {
+    if (jb) printf("%s: No such job\n", argv[1]);
+    else printf("(%s): No such process\n", argv[1]);
+    return;
+  }
+
+  if (bg) { // bg
+    job->state = BG;
+    printf("[%d] (%d) %s", job->jid, job->pid, job->cmdline);
+    if (kill(-job->pid, SIGCONT) < 0) unix_error("kill error");
+  } else { // fg
+    job->state = FG;
+    if (kill(-job->pid, SIGCONT) < 0) unix_error("kill error");
+    waitfg(job->pid);
+  }
   return;
 }
 
@@ -253,7 +342,19 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
-  return;
+  int status;
+  struct job_t* job;
+
+  waitpid(pid, &status, WUNTRACED);
+  if (WIFSTOPPED(status)) { // if process is stopped
+    printf("Job [%d] (%d) stopped by signal %d\n", pid2jid(pid), pid, WSTOPSIG(status));
+    job = getjobpid(jobs, pid);
+    if (job == NULL) app_error("waitfg: job does not exist");
+    job->state = ST;
+  } else { // if process is not stopped (= terminated)
+    if (!WIFEXITED(status)) printf("Job [%d] (%d) terminated by signal %d\n", pid2jid(pid), pid, WTERMSIG(status));
+    deletejob(jobs, pid);
+  }
 }
 
 /*****************
@@ -269,6 +370,11 @@ void waitfg(pid_t pid)
  */
 void sigchld_handler(int sig)
 {
+  pid_t pid;
+
+  for (; (pid = waitpid(-1, NULL, WNOHANG)) > 0; ) {
+    deletejob(jobs, pid);
+  }
   return;
 }
 
@@ -279,6 +385,12 @@ void sigchld_handler(int sig)
  */
 void sigint_handler(int sig)
 {
+  pid_t pid;
+
+  pid = fgpid(jobs);
+  if (pid != 0) { // foreground job exists
+    if (kill(-pid, sig) < 0) unix_error("kill error");
+  }
   return;
 }
 
@@ -289,6 +401,16 @@ void sigint_handler(int sig)
  */
 void sigtstp_handler(int sig)
 {
+  pid_t pid;
+  struct job_t* job;
+
+  pid = fgpid(jobs);
+  if (pid != 0) { // foreground job exists
+    job = getjobpid(jobs, pid);
+    if (job == NULL) app_error("sigtstp_handler: job does not exist");
+    job->state = ST;
+    if (kill(-pid, sig) < 0) unix_error("kill error");
+  }
   return;
 }
 
