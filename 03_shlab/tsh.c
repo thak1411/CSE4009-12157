@@ -402,13 +402,9 @@ void sigint_handler(int sig)
 void sigtstp_handler(int sig)
 {
   pid_t pid;
-  struct job_t* job;
 
   pid = fgpid(jobs);
   if (pid != 0) { // foreground job exists
-    job = getjobpid(jobs, pid);
-    if (job == NULL) app_error("sigtstp_handler: job does not exist");
-    job->state = ST;
     if (kill(-pid, sig) < 0) unix_error("kill error");
   }
   return;
