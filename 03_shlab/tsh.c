@@ -64,6 +64,8 @@ int builtin_cmd(char **argv);
 void do_bgfg(char **argv);
 void waitfg(pid_t pid);
 
+void handle_child_signaled_process(pid_t pid, int status);
+
 void sigchld_handler(int sig);
 void sigint_handler(int sig);
 void sigtstp_handler(int sig);
@@ -175,14 +177,14 @@ void eval(char *cmdline)
   int bg;
   char* argv[MAXARGS];
 
-  // block SIGCHLD
-  sigset_t mask, prev;
-  sigemptyset(&mask);
-  sigaddset(&mask, SIGCHLD);
-  sigprocmask(SIG_BLOCK, &mask, &prev);
-
   bg = parseline(cmdline, argv);
   if (!builtin_cmd(argv)) {
+    // block SIGCHLD
+    sigset_t mask, prev;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGCHLD);
+    sigprocmask(SIG_BLOCK, &mask, &prev);
+
     if ((pid = fork()) == 0) { // child
       setpgrp();
       if (execve(argv[0], argv, environ) < 0) {
@@ -338,14 +340,13 @@ void do_bgfg(char **argv)
 }
 
 /*
- * waitfg - Block until process pid is no longer the foreground process
+ * handle_child_signaled_process - Handle signaled process
+ * when process is stopped or terminated
+ * then change job state to ST or delete job
  */
-void waitfg(pid_t pid)
-{
-  int status;
+void handle_child_signaled_process(pid_t pid, int status) {
   struct job_t* job;
 
-  waitpid(pid, &status, WUNTRACED);
   if (WIFSTOPPED(status)) { // if process is stopped
     printf("Job [%d] (%d) stopped by signal %d\n", pid2jid(pid), pid, WSTOPSIG(status));
     job = getjobpid(jobs, pid);
@@ -355,6 +356,18 @@ void waitfg(pid_t pid)
     if (!WIFEXITED(status)) printf("Job [%d] (%d) terminated by signal %d\n", pid2jid(pid), pid, WTERMSIG(status));
     deletejob(jobs, pid);
   }
+}
+
+/*
+ * waitfg - Block until process pid is no longer the foreground process
+ */
+void waitfg(pid_t pid)
+{
+  int status;
+  struct job_t* job;
+
+  waitpid(pid, &status, WUNTRACED);
+  handle_child_signaled_process(pid, status);
 }
 
 /*****************
@@ -370,10 +383,11 @@ void waitfg(pid_t pid)
  */
 void sigchld_handler(int sig)
 {
+  int status;
   pid_t pid;
 
-  for (; (pid = waitpid(-1, NULL, WNOHANG)) > 0; ) {
-    deletejob(jobs, pid);
+  for (; (pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0; ) {
+    handle_child_signaled_process(pid, status);
   }
   return;
 }
