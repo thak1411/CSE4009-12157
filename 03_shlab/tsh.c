@@ -193,14 +193,14 @@ void eval(char *cmdline)
         exit(0);
       }
     } else if (pid > 0) { // parent
+      addjob(jobs, pid, bg ? BG : FG, cmdline);
+
       // unblocking SIGCHLD
       sigprocmask(SIG_SETMASK, &prev, NULL);
 
       if (bg) { // background
-        addjob(jobs, pid, BG, cmdline);
         printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
       } else { // foreground
-        addjob(jobs, pid, FG, cmdline);
         waitfg(pid);
       }
     } else unix_error("fork error");
