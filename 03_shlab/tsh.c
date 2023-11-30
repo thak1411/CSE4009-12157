@@ -183,9 +183,14 @@ void eval(char *cmdline)
     sigset_t mask, prev;
     sigemptyset(&mask);
     sigaddset(&mask, SIGCHLD);
+    sigaddset(&mask, SIGINT);
+    sigaddset(&mask, SIGTSTP);
     sigprocmask(SIG_BLOCK, &mask, &prev);
 
     if ((pid = fork()) == 0) { // child
+      // unblocking Signals
+      sigprocmask(SIG_SETMASK, &prev, NULL);
+      // set process group id to pid (make new group)
       setpgrp();
       if (execve(argv[0], argv, environ) < 0) {
         printf("%s: Command not found\n", argv[0]);
@@ -195,7 +200,7 @@ void eval(char *cmdline)
     } else if (pid > 0) { // parent
       addjob(jobs, pid, bg ? BG : FG, cmdline);
 
-      // unblocking SIGCHLD
+      // unblocking Signals
       sigprocmask(SIG_SETMASK, &prev, NULL);
 
       if (bg) { // background
